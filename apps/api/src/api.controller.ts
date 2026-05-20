@@ -1,12 +1,12 @@
-import { Controller, Get } from '@nestjs/common';
-import { ApiService, type ServiceInfo } from './api.service';
+﻿import { Controller, Get } from '@nestjs/common';
+import { ApiService } from './api.service';
 
 @Controller()
 export class ApiController {
   constructor(private readonly apiService: ApiService) {}
 
   @Get()
-  getServiceInfo(): ServiceInfo {
+  getServiceInfo(): { service: string; version: string } {
     return this.apiService.getServiceInfo();
   }
 }
