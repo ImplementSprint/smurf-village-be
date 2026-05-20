@@ -1,56 +1,98 @@
 import {
-  ArgumentsHost,
+  type ArgumentsHost,
   Catch,
-  ExceptionFilter,
+  type ExceptionFilter,
   HttpException,
   HttpStatus,
+  Logger,
 } from '@nestjs/common';
-import { Request, Response } from 'express';
+import type { Request, Response } from 'express';
+
+interface ErrorEnvelope {
+  statusCode: number;
+  message: string;
+  error: string;
+  correlationId: string | null;
+  timestamp: string;
+  path: string;
+}
 
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
+  private readonly logger = new Logger(AllExceptionsFilter.name);
+
   catch(exception: unknown, host: ArgumentsHost): void {
     const ctx = host.switchToHttp();
-    const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request & { correlationId?: string }>();
+    const response = ctx.getResponse<Response>();
 
-    const isHttpException = exception instanceof HttpException;
-    const statusCode = isHttpException
-      ? exception.getStatus()
-      : HttpStatus.INTERNAL_SERVER_ERROR;
+    let statusCode: number;
+    let message: string;
+    let error: string;
 
-    const fallbackErrorText = HttpStatus[statusCode] ?? 'Error';
-    const fallbackMessage =
-      statusCode === HttpStatus.INTERNAL_SERVER_ERROR
-        ? 'Internal Server Error'
-        : fallbackErrorText;
+    if (exception instanceof HttpException) {
+      statusCode = exception.getStatus();
+      const exceptionResponse = exception.getResponse();
 
-    const exceptionBody = isHttpException ? exception.getResponse() : null;
-
-    let message = fallbackMessage;
-    let error = fallbackErrorText;
-
-    if (typeof exceptionBody === 'string') {
-      message = exceptionBody;
-    } else if (exceptionBody && typeof exceptionBody === 'object') {
-      const body = exceptionBody as { message?: string | string[]; error?: string };
-      if (Array.isArray(body.message)) {
-        message = body.message.join('; ');
-      } else if (typeof body.message === 'string' && body.message.trim().length > 0) {
-        message = body.message;
+      if (typeof exceptionResponse === 'string') {
+        message = exceptionResponse;
+        error = exception.message;
+      } else if (
+        typeof exceptionResponse === 'object' &&
+        exceptionResponse !== null
+      ) {
+        const resp = exceptionResponse as Record<string, unknown>;
+        message =
+          typeof resp['message'] === 'string'
+            ? resp['message']
+            : Array.isArray(resp['message'])
+              ? (resp['message'] as string[]).join('; ')
+              : exception.message;
+        error =
+          typeof resp['error'] === 'string' ? resp['error'] : exception.message;
+      } else {
+        message = exception.message;
+        error = exception.message;
       }
-      if (typeof body.error === 'string' && body.error.trim().length > 0) {
-        error = body.error;
+      this.logger.warn(
+        `HTTP ${statusCode} on ${request.method} ${request.url}: ${message}`,
+      );
+    } else {
+      statusCode = HttpStatus.INTERNAL_SERVER_ERROR;
+      message = 'Internal Server Error';
+      error = 'Internal Server Error';
+
+      if (process.env['NODE_ENV'] !== 'production') {
+        this.logger.error(
+          `Unhandled exception: ${String(exception)}`,
+          exception instanceof Error ? exception.stack : undefined,
+        );
+      } else {
+        // Production: log class name only — no stack or message to avoid
+        // leaking internal details. The name alone is sufficient for triage.
+        const exceptionName =
+          exception instanceof Error ? exception.name : typeof exception;
+        this.logger.error(
+          `Unhandled exception on ${request.url} [${exceptionName}]`,
+        );
       }
     }
 
-    response.status(statusCode).json({
+    const correlationId: string | null =
+      request.correlationId ??
+      (typeof request.headers['x-correlation-id'] === 'string'
+        ? request.headers['x-correlation-id']
+        : null);
+
+    const body: ErrorEnvelope = {
       statusCode,
       message,
       error,
-      correlationId: request.correlationId ?? 'unknown',
+      correlationId,
       timestamp: new Date().toISOString(),
-      path: request.originalUrl ?? request.url,
-    });
+      path: request.url,
+    };
+
+    response.status(statusCode).json(body);
   }
 }

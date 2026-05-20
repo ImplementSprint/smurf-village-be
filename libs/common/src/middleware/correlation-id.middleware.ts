@@ -1,27 +1,30 @@
-import { Injectable, NestMiddleware } from '@nestjs/common';
-import { randomUUID } from 'crypto';
-import { NextFunction, Request, Response } from 'express';
+import { Injectable, type NestMiddleware } from '@nestjs/common';
+import type { NextFunction, Request, Response } from 'express';
 
-const MAX_CORRELATION_ID_LENGTH = 128;
-const CORRELATION_ID_HEADER = 'x-correlation-id';
-
-function sanitizeCorrelationId(input?: string | string[]): string | null {
-  if (!input) return null;
-
-  const raw = Array.isArray(input) ? input[0] : input;
-  const cleaned = raw.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, MAX_CORRELATION_ID_LENGTH);
-  return cleaned.length > 0 ? cleaned : null;
+// Augment the Express Request type to carry the correlation ID downstream
+// so filters and interceptors can read it without re-parsing the header.
+declare module 'express' {
+  interface Request {
+    correlationId?: string;
+  }
 }
 
 @Injectable()
 export class CorrelationIdMiddleware implements NestMiddleware {
-  use(
-    req: Request & { correlationId?: string },
-    res: Response,
-    next: NextFunction,
-  ): void {
-    const incoming = sanitizeCorrelationId(req.headers[CORRELATION_ID_HEADER]);
-    const correlationId = incoming ?? randomUUID();
+  use(req: Request, res: Response, next: NextFunction): void {
+    const existing = req.headers['x-correlation-id'];
+
+    // Sanitize the inbound header before echoing it into response headers and
+    // logs. Strip anything that is not alphanumeric, hyphen, or underscore to
+    // prevent control-character or oversized-value injection. Truncate to 128
+    // characters. Fall back to a fresh UUID if nothing survives sanitization.
+    const sanitized =
+      typeof existing === 'string'
+        ? existing.replace(/[^a-zA-Z0-9\-_]/g, '').slice(0, 128)
+        : '';
+
+    const correlationId: string =
+      sanitized.length > 0 ? sanitized : crypto.randomUUID();
 
     req.correlationId = correlationId;
     res.setHeader('X-Correlation-ID', correlationId);

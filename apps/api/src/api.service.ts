@@ -1,11 +1,13 @@
-﻿import { Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+
+export interface ServiceInfo {
+  service: string;
+  version: string;
+}
 
 @Injectable()
 export class ApiService {
-  getServiceInfo(): { service: string; version: string } {
-    return {
-      service: 'tribe-backend',
-      version: '1.0.0',
-    };
+  getServiceInfo(): ServiceInfo {
+    return { service: 'tribe-backend', version: '1.0.0' };
   }
 }

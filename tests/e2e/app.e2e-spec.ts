@@ -13,7 +13,7 @@ describe('ApiController (e2e)', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
-    app.setGlobalPrefix('api/tribeX/auth/v1');
+    app.setGlobalPrefix('api/v1');
     await app.init();
   });
 
@@ -21,13 +21,13 @@ describe('ApiController (e2e)', () => {
     await app.close();
   });
 
-  it('/api/tribeX/auth/v1 (GET)', () => {
+  it('/api/v1 (GET)', () => {
     const httpServer = app.getHttpServer() as unknown as Parameters<
       typeof request
     >[0];
 
     return request(httpServer)
-      .get('/api/tribeX/auth/v1')
+      .get('/api/v1')
       .expect(200)
       .expect((res: { body: { service: string; version: string } }) => {
         expect(res.body.service).toBe('tribe-backend');
@@ -35,13 +35,13 @@ describe('ApiController (e2e)', () => {
       });
   });
 
-  it('/api/tribeX/auth/v1/health (GET)', () => {
+  it('/api/v1/health (GET)', () => {
     const httpServer = app.getHttpServer() as unknown as Parameters<
       typeof request
     >[0];
 
     return request(httpServer)
-      .get('/api/tribeX/auth/v1/health')
+      .get('/api/v1/health')
       .expect(
         (res: {
           status: number;

@@ -1,4 +1,5 @@
-import { Test, TestingModule } from '@nestjs/testing';
+import { Test } from '@nestjs/testing';
+import type { TestingModule } from '@nestjs/testing';
 import { ApiService } from './api.service';
 
 describe('ApiService', () => {
@@ -16,18 +17,20 @@ describe('ApiService', () => {
     expect(service).toBeDefined();
   });
 
-  it('returns the correct service name', () => {
-    expect(service.getServiceInfo().service).toBe('tribe-backend');
-  });
+  describe('getServiceInfo', () => {
+    it('returns the correct service name', () => {
+      const info = service.getServiceInfo();
+      expect(info.service).toBe('tribe-backend');
+    });
 
-  it('returns the correct version', () => {
-    expect(service.getServiceInfo().version).toBe('1.0.0');
-  });
+    it('returns the correct version', () => {
+      const info = service.getServiceInfo();
+      expect(info.version).toBe('1.0.0');
+    });
 
-  it('returns an object with both service and version keys', () => {
-    expect(service.getServiceInfo()).toEqual({
-      service: 'tribe-backend',
-      version: '1.0.0',
+    it('returns an object with both service and version keys', () => {
+      const info = service.getServiceInfo();
+      expect(info).toEqual({ service: 'tribe-backend', version: '1.0.0' });
     });
   });
 });

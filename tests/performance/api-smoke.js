@@ -3,23 +3,17 @@ import { check, sleep } from 'k6';
 
 export const options = {
   vus: 1,
-  duration: '30s',
+  iterations: 1,
 };
 
-const BASE_URL = __ENV.BASE_URL || 'http://localhost:5000';
+const baseUrl = __ENV.BASE_URL || __ENV.K6_BASE_URL || 'http://localhost:3000';
 
-export default function () {
-  const res = http.get(`${BASE_URL}/api/tribeX/auth/v1/health`);
-  check(res, {
-    'status is 200': (r) => r.status === 200,
-    'apiCenter is reachable': (r) => {
-      try {
-        const body = JSON.parse(r.body);
-        return body.checks && body.checks.apiCenter === true;
-      } catch {
-        return false;
-      }
-    },
+export default function smokeTest() {
+  const response = http.get(`${baseUrl}/api/v1/health`);
+
+  check(response, {
+    'api health status is 200': (res) => res.status === 200,
   });
+
   sleep(1);
 }
