@@ -1,10 +1,9 @@
-import { Test } from '@nestjs/testing';
-import type { TestingModule } from '@nestjs/testing';
+﻿import { Test, TestingModule } from '@nestjs/testing';
 import { ApiController } from './api.controller';
 import { ApiService } from './api.service';
 
 describe('ApiController', () => {
-  let apiController: ApiController;
+  let ApiController: ApiController;
 
   beforeEach(async () => {
     const app: TestingModule = await Test.createTestingModule({
@@ -12,12 +11,12 @@ describe('ApiController', () => {
       providers: [ApiService],
     }).compile();
 
-    apiController = app.get<ApiController>(ApiController);
+    ApiController = app.get<ApiController>(ApiController);
   });
 
   describe('root', () => {
-    it('should return service info', () => {
-      expect(apiController.getServiceInfo()).toEqual({
+    it('should return service identity', () => {
+      expect(ApiController.getServiceInfo()).toEqual({
         service: 'tribe-backend',
         version: '1.0.0',
       });
