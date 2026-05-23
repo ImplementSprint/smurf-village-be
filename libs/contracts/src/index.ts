@@ -1,1 +1,1 @@
-export * from './location.patterns';
+// Shared message patterns and payload contracts
