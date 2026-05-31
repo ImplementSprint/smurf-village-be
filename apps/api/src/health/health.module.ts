@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
-import { ApiCenterSdkModule } from '@app/api-center';
-import { SupabaseModule } from '@app/supabase';
+import { ApiCenterSdkModule } from '../api-center/api-center-sdk.module';
+import { SupabaseModule } from '../supabase/supabase.module';
 import { HealthController } from './health.controller';
 import { HealthService } from './health.service';
 
