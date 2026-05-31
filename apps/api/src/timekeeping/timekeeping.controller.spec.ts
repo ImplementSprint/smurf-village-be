@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { TimekeepingController } from './timekeeping.controller';
 import { TimekeepingService } from './timekeeping.service';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 describe('TimekeepingController', () => {
   let controller: TimekeepingController;
@@ -21,7 +22,10 @@ describe('TimekeepingController', () => {
           },
         },
       ],
-    }).compile();
+    })
+      .overrideGuard(JwtAuthGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
 
     controller = module.get<TimekeepingController>(TimekeepingController);
   });
