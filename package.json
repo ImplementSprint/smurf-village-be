@@ -77,20 +77,45 @@
     "typescript-eslint": "^8.20.0"
   },
   "jest": {
-    "moduleFileExtensions": [
-      "js",
-      "json",
-      "ts"
-    ],
-    "rootDir": "src",
-    "testRegex": ".*\\.spec\\.ts$",
-    "transform": {
-      "^.+\\.(t|j)s$": "ts-jest"
+    "moduleNameMapper": {
+      "@app/supabase/(.*)": "<rootDir>/libs/supabase/src/$1",
+      "@app/supabase": "<rootDir>/libs/supabase/src",
+      "@app/common/(.*)": "<rootDir>/libs/common/src/$1",
+      "@app/common": "<rootDir>/libs/common/src",
+      "@app/api-center/(.*)": "<rootDir>/libs/api-center/src/$1",
+      "@app/api-center": "<rootDir>/libs/api-center/src",
+      "@app/contracts/(.*)": "<rootDir>/libs/contracts/src/$1",
+      "@app/contracts": "<rootDir>/libs/contracts/src"
     },
-    "collectCoverageFrom": [
-      "**/*.(t|j)s"
-    ],
-    "coverageDirectory": "../coverage",
-    "testEnvironment": "node"
+    "projects": [
+      {
+        "displayName": "api",
+        "rootDir": "<rootDir>/apps/api/src",
+        "testRegex": ".*\\.spec\\.ts$",
+        "transform": {
+          "^.+\\.(t|j)s$": "ts-jest"
+        },
+        "collectCoverageFrom": [
+          "**/*.(t|j)s"
+        ],
+        "coverageDirectory": "<rootDir>/coverage",
+        "testEnvironment": "node",
+        "moduleFileExtensions": [
+          "js",
+          "json",
+          "ts"
+        ],
+        "moduleNameMapper": {
+          "@app/supabase/(.*)": "<rootDir>/../../../libs/supabase/src/$1",
+          "@app/supabase": "<rootDir>/../../../libs/supabase/src",
+          "@app/common/(.*)": "<rootDir>/../../../libs/common/src/$1",
+          "@app/common": "<rootDir>/../../../libs/common/src",
+          "@app/api-center/(.*)": "<rootDir>/../../../libs/api-center/src/$1",
+          "@app/api-center": "<rootDir>/../../../libs/api-center/src",
+          "@app/contracts/(.*)": "<rootDir>/../../../libs/contracts/src/$1",
+          "@app/contracts": "<rootDir>/../../../libs/contracts/src"
+        }
+      }
+    ]
   }
 }
