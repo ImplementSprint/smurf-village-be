@@ -1,4 +1,4 @@
-﻿import {
+import {
   Controller,
   Post,
   Body,
@@ -12,11 +12,8 @@
 import type { Request, Response } from 'express';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
-import { JwtAuthGuard } from './jwt-auth.guard';
 import { LoginDto } from './dto/login.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
-import { SwitchRoleDto } from './dto/switch-role.dto';
-import type { AuthenticatedRequest } from '@app/common';
 
 const COOKIE_NAME = 'refresh_token';
 
@@ -27,7 +24,7 @@ function setCookieOptions(maxAgeMs: number) {
     secure: isProd,
     sameSite: isProd ? 'none' : 'lax',
     maxAge: maxAgeMs,
-    path: '/api/tribeX/auth/v1',
+    path: '/api/v1',
   } as const;
 }
 
@@ -129,15 +126,5 @@ export class AuthController {
     }
 
     return this.authService.me(token);
-  }
-
-  @UseGuards(JwtAuthGuard)
-  @Post('switch-role')
-  switchRole(@Req() req: AuthenticatedRequest, @Body() dto: SwitchRoleDto) {
-    return this.authService.switchRole(
-      req.user.sub_userid,
-      req.user.company_id,
-      dto.role_id,
-    );
   }
 }

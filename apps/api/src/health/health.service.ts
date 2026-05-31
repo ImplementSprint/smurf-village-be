@@ -1,6 +1,6 @@
-﻿import { Injectable } from '@nestjs/common';
-import { ApiCenterSdkService } from '@app/api-center';
-import { SupabaseService } from '@app/supabase';
+import { Injectable } from '@nestjs/common';
+import { ApiCenterSdkService } from '../api-center/api-center-sdk.service';
+import { SupabaseService } from '../supabase/supabase.service';
 
 @Injectable()
 export class HealthService {

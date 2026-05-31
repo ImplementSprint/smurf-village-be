@@ -1,7 +1,7 @@
-﻿import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
+import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as crypto from 'node:crypto';
-import { SupabaseService } from '@app/supabase';
+import { SupabaseService } from '../supabase/supabase.service';
 
 function sha256(input: string) {
   return crypto.createHash('sha256').update(input).digest('hex');

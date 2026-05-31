@@ -1,7 +1,7 @@
-﻿import { Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 
 @Injectable()
-export class ApiService {
+export class AppService {
   getServiceInfo(): { service: string; version: string } {
     return {
       service: 'tribe-backend',

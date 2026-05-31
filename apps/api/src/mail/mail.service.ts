@@ -1,8 +1,8 @@
-﻿import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ApiCenterSdkService } from '@app/api-center';
 
 type SendMailOptions = {
+  from?: string;
   to: string;
   subject: string;
   html: string;
@@ -32,14 +32,6 @@ const STATUS = {
   warning: { bg: '#fffbeb', border: '#fde68a', text: '#92400e', badge: '#d97706', headerBg: 'linear-gradient(135deg,#1c1400 0%,#78350f 100%)' },
   info:    { bg: '#eff6ff', border: '#bfdbfe', text: '#1e40af', badge: '#3b82f6', headerBg: BRAND.headerBg },
 };
-
-function normalizeEmail(input: string): string {
-  return (input ?? '').trim().toLowerCase();
-}
-
-function isValidEmail(input: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input);
-}
 
 function emailWrapper(headerHtml: string, bodyHtml: string, footerExtra = '') {
   return `
@@ -191,23 +183,62 @@ function bodyText(html: string, mt = '0') {
 
 @Injectable()
 export class MailService {
+  private readonly apiKey: string;
+  private readonly baseUrl: string;
+  private readonly timeoutMs: number;
+  private readonly senderEmail: string;
+  private readonly senderName: string;
+  private readonly from: string;
   private readonly logger = new Logger(MailService.name);
 
-  constructor(
-    private readonly config: ConfigService,
-    private readonly apiCenterSdk: ApiCenterSdkService,
-  ) {}
+  constructor(private readonly config: ConfigService) {
+    this.apiKey = this.config.get<string>('BREVO_API_KEY') ?? '';
+    this.baseUrl = this.config.get<string>('BREVO_BASE_URL') ?? 'https://api.brevo.com';
+    this.senderEmail = this.config.get<string>('BREVO_SENDER_EMAIL') ?? '';
+    this.senderName = this.config.get<string>('BREVO_SENDER_NAME') ?? 'Blues Clues HRIS';
+    this.timeoutMs = Number(this.config.get<string>('BREVO_TIMEOUT_MS') ?? 15000);
+
+    this.from = `"${this.senderName}" <${this.senderEmail}>`;
+
+    if (!this.apiKey || !this.senderEmail) {
+      this.logger.warn('Brevo email is not fully configured. Set BREVO_API_KEY and BREVO_SENDER_EMAIL.');
+    }
+  }
 
   private async sendMail(options: SendMailOptions): Promise<void> {
+    if (!this.apiKey || !this.senderEmail) {
+      throw new Error('Brevo email is not configured');
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+
     try {
-      await this.apiCenterSdk.getClient().emailSend({
-        to: [{ email: options.to }],
-        subject: options.subject,
-        html: options.html,
+      const response = await fetch(`${this.baseUrl.replace(/\/$/, '')}/v3/smtp/email`, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          'api-key': this.apiKey,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          sender: {
+            email: this.senderEmail,
+            name: this.senderName,
+          },
+          to: [{ email: options.to }],
+          subject: options.subject,
+          htmlContent: options.html,
+        }),
+        signal: controller.signal,
       });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.logger.error(`emailSend failed → ${normalizeEmail(options.to)}: ${msg}`);
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => '');
+        throw new Error(`Brevo send failed with HTTP ${response.status}: ${body}`);
+      }
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
@@ -265,6 +296,7 @@ export class MailService {
         </p>`;
 
       await this.sendMail({
+        from: this.from,
         to,
         subject: `You're invited to ${BRAND.name}`,
         html: emailWrapper(header, body),
@@ -309,6 +341,7 @@ export class MailService {
         </p>`;
 
       await this.sendMail({
+        from: this.from,
         to,
         subject: `Reset your ${BRAND.name} password`,
         html: emailWrapper(header, body),
@@ -345,6 +378,7 @@ export class MailService {
         </p>`;
 
       await this.sendMail({
+        from: this.from,
         to,
         subject: `Registration received - ${BRAND.name}`,
         html: emailWrapper(header, body),
@@ -396,6 +430,7 @@ export class MailService {
         </p>`;
 
       await this.sendMail({
+        from: this.from,
         to,
         subject: `Payment confirmed - ${BRAND.name}`,
         html: emailWrapper(header, body),
@@ -452,6 +487,7 @@ export class MailService {
         </table>`;
 
       await this.sendMail({
+        from: this.from,
         to,
         subject: `Your System Admin credentials - ${BRAND.name}`,
         html: emailWrapper(header, body),
@@ -479,6 +515,7 @@ export class MailService {
       </p>`;
 
     await this.sendMail({
+      from: this.from,
       to,
       subject: `Verify your email – ${BRAND.name}`,
       html: emailWrapper(header, body),
@@ -590,6 +627,7 @@ export class MailService {
       ${bodyText(`Log in to your applicant portal to view this schedule, accept or request a reschedule, and track your application status.`, '0')}`;
 
     await this.sendMail({
+      from: this.from,
       to: opts.to,
       subject: subjectLine,
       html: emailWrapper(header, body),
@@ -670,6 +708,7 @@ export class MailService {
       ${bodyText(`<strong>Next step:</strong> ${nextSteps}`, '0')}`;
 
     await this.sendMail({
+      from: this.from,
       to: opts.to,
       subject: `${opts.applicantName} ${actionLabel} — ${opts.jobTitle}`,
       html: emailWrapper(header, body),
@@ -717,6 +756,7 @@ export class MailService {
       </p>`;
 
     await this.sendMail({
+      from: this.from,
       to: opts.to,
       subject: `Interview Cancelled – ${opts.jobTitle}`,
       html: emailWrapper(header, body),
@@ -770,6 +810,7 @@ export class MailService {
 
     try {
       await this.sendMail({
+        from: this.from,
         to: opts.to,
         subject: `Onboarding Update: "${opts.itemTitle}" has been ${statusLabel}`,
         html: emailWrapper(header, body),
@@ -821,6 +862,7 @@ export class MailService {
 
     try {
       await this.sendMail({
+        from: this.from,
         to: opts.to,
         subject: 'Your onboarding is complete — Welcome to the team!',
         html: emailWrapper(header, body),
@@ -852,6 +894,7 @@ export class MailService {
 
     try {
       await this.sendMail({
+        from: this.from,
         to: opts.to,
         subject: 'Onboarding update: revisions requested by HR',
         html: emailWrapper(header, body),
@@ -900,6 +943,7 @@ export class MailService {
 
     try {
       await this.sendMail({
+        from: this.from,
         to: opts.to,
         subject: `Your ${fieldLabel} change request has been ${statusLabel}`,
         html: emailWrapper(header, body),
@@ -976,6 +1020,7 @@ export class MailService {
 
     try {
       await this.sendMail({
+        from: this.from,
         to: opts.to,
         subject: `Absence Request ${actionLabel} – ${fmtDate}`,
         html: emailWrapper(header, body),
@@ -985,152 +1030,76 @@ export class MailService {
     }
   }
 
-  // ─── Leave Review ───────────────────────────────────────────────────────────
-
-  async sendLeaveReviewEmail(opts: {
-    to: string;
-    employeeName: string;
-    reviewerName: string;
-    status: 'Approved' | 'Rejected';
-    leaveType: string;
-    startDate: string;
-    endDate: string;
-    totalDays: number;
-    rejectionReason?: string | null;
-  }): Promise<void> {
-    const isApproved  = opts.status === 'Approved';
-    const st          = isApproved ? STATUS.success : STATUS.danger;
-    const actionLabel = opts.status;
-
-    const fmt = (d: string) =>
-      new Date(`${d}T12:00:00`).toLocaleDateString('en-US', {
-        month: 'long', day: 'numeric', year: 'numeric',
-      });
-
-    const dateRange = opts.startDate === opts.endDate
-      ? fmt(opts.startDate)
-      : `${fmt(opts.startDate)} – ${fmt(opts.endDate)}`;
-
-    const rejectionSection = !isApproved && opts.rejectionReason
-      ? noteCard('Reason for Rejection', opts.rejectionReason, STATUS.danger.bg, STATUS.danger.border)
-      : '';
-
-    const nextStep = isApproved
-      ? 'Your leave has been recorded. Enjoy your time off and take care!'
-      : 'If you believe this decision is incorrect, please reach out to your HR administrator.';
-
-    const header = brandHeader(
-      `Leave Request ${actionLabel}`,
-      'Your leave request has been reviewed by HR',
-      st.headerBg,
-    );
-
-    const body = `
-      ${bodyText(`Hi <strong>${opts.employeeName}</strong>, your leave request has been reviewed.`)}
-
-      <div style="background:${st.bg};border:1px solid ${st.border};border-radius:12px;padding:20px 24px;margin:20px 0;">
-        <table role="presentation" cellpadding="0" cellspacing="0" border="0">
-          <tr><td>${statusBadge(actionLabel, st.text, st.bg, st.border)}</td></tr>
-          <tr>
-            <td style="padding-top:10px;">
-              <p style="margin:0;font-size:15px;font-weight:600;color:${st.text};font-family:'Poppins',sans-serif;">${opts.leaveType}</p>
-              <p style="margin:4px 0 0;font-size:13px;color:${BRAND.textMuted};font-family:'Open Sans',sans-serif;">${dateRange}</p>
-            </td>
-          </tr>
-        </table>
-      </div>
-
-      ${infoCard([
-        { label: 'Leave Type',   value: opts.leaveType },
-        { label: 'Period',       value: dateRange },
-        { label: 'Total Days',   value: `${opts.totalDays} day${opts.totalDays !== 1 ? 's' : ''}` },
-        { label: 'Reviewed by',  value: opts.reviewerName },
-        { label: 'Decision',     value: actionLabel },
-      ], st.bg, st.border)}
-
-      ${rejectionSection}
-
-      ${divider()}
-
-      ${bodyText(`<strong>Next step:</strong> ${nextStep}`, '0')}`;
-
-    try {
-      await this.sendMail({
-        to: opts.to,
-        subject: `Leave Request ${actionLabel} — ${opts.leaveType} (${dateRange})`,
-        html: emailWrapper(header, body),
-      });
-    } catch (error) {
-      this.logger.error('Failed to send leave review email', error);
-    }
-  }
+  // ─── Overtime Review ─────────────────────────────────────────────────────────
 
   async sendOvertimeReviewEmail(opts: {
     to: string;
     employeeName: string;
     reviewerName: string;
-    status: 'APPROVED' | 'DENIED';
-    overtimeType: string;
+    action: 'APPROVED' | 'DENIED';
     otDate: string;
+    otType: string;
     startTime: string;
     endTime: string;
     plannedHours: number;
-    denialReason?: string | null;
+    reviewNote?: string | null;
   }): Promise<void> {
-    const isApproved = opts.status === 'APPROVED';
-    const st = isApproved ? STATUS.success : STATUS.danger;
+    const isApproved  = opts.action === 'APPROVED';
     const actionLabel = isApproved ? 'Approved' : 'Denied';
+    const st          = isApproved ? STATUS.success : STATUS.danger;
 
-    const fmt = (d: string) =>
-      new Date(`${d}T12:00:00`).toLocaleDateString('en-US', {
-        month: 'long', day: 'numeric', year: 'numeric',
-      });
+    const fmtDate = new Date(`${opts.otDate}T12:00:00`).toLocaleDateString('en-US', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+    });
 
-    const denialSection = !isApproved && opts.denialReason
-      ? noteCard('Reason for Denial', opts.denialReason, STATUS.danger.bg, STATUS.danger.border)
+    const typeLabel =
+      opts.otType === 'REST_DAY' ? 'Rest Day'
+      : opts.otType === 'HOLIDAY' ? 'Holiday'
+      : 'Normal';
+
+    const reviewNoteSection = opts.reviewNote
+      ? noteCard('Note from HR', opts.reviewNote)
       : '';
 
     const nextStep = isApproved
-      ? 'Your overtime has been recorded. Please track your overtime hours accordingly.'
-      : 'If you believe this decision is incorrect, please reach out to your HR administrator.';
-
-    const typeMap: Record<string, string> = {
-      NORMAL: 'Normal Overtime',
-      REST_DAY: 'Rest Day Overtime',
-      HOLIDAY: 'Holiday Overtime',
-    };
+      ? 'Your overtime request has been approved. This will be reflected in your timekeeping records.'
+      : 'If you believe this is incorrect, please contact your HR administrator directly.';
 
     const header = brandHeader(
       `Overtime Request ${actionLabel}`,
-      'Your overtime request has been reviewed by HR',
+      'Your overtime request has been reviewed',
       st.headerBg,
     );
 
     const body = `
-      ${bodyText(`Hi <strong>${opts.employeeName}</strong>, your overtime request has been reviewed.`)}
+      ${bodyText(`Hi <strong>${opts.employeeName}</strong>, your overtime request has been reviewed by HR.`)}
 
       <div style="background:${st.bg};border:1px solid ${st.border};border-radius:12px;padding:20px 24px;margin:20px 0;">
         <table role="presentation" cellpadding="0" cellspacing="0" border="0">
-          <tr><td>${statusBadge(actionLabel, st.text, st.bg, st.border)}</td></tr>
+          <tr>
+            <td style="vertical-align:middle;">
+              ${statusBadge(actionLabel, st.text, st.bg, st.border)}
+            </td>
+          </tr>
           <tr>
             <td style="padding-top:10px;">
-              <p style="margin:0;font-size:15px;font-weight:600;color:${st.text};font-family:'Poppins',sans-serif;">${typeMap[opts.overtimeType] || opts.overtimeType}</p>
-              <p style="margin:4px 0 0;font-size:13px;color:${BRAND.textMuted};font-family:'Open Sans',sans-serif;">${fmt(opts.otDate)} — ${opts.startTime} to ${opts.endTime}</p>
+              <p style="margin:0;font-size:14px;font-weight:600;color:${st.text};font-family:'Poppins',sans-serif;">${typeLabel} Overtime</p>
+              <p style="margin:4px 0 0;font-size:13px;color:${BRAND.textMuted};font-family:'Open Sans',sans-serif;">${fmtDate} &bull; ${opts.startTime}–${opts.endTime} (${opts.plannedHours}h)</p>
             </td>
           </tr>
         </table>
       </div>
 
       ${infoCard([
-        { label: 'Overtime Type', value: typeMap[opts.overtimeType] || opts.overtimeType },
-        { label: 'Date', value: fmt(opts.otDate) },
-        { label: 'Time Window', value: `${opts.startTime} – ${opts.endTime}` },
-        { label: 'Planned Hours', value: `${opts.plannedHours}h` },
+        { label: 'Date',        value: fmtDate },
+        { label: 'Type',        value: `${typeLabel} Overtime` },
+        { label: 'Window',      value: `${opts.startTime} – ${opts.endTime}` },
+        { label: 'Planned hrs', value: `${opts.plannedHours}h` },
         { label: 'Reviewed by', value: opts.reviewerName },
-        { label: 'Decision', value: actionLabel },
+        { label: 'Decision',    value: actionLabel },
       ], st.bg, st.border)}
 
-      ${denialSection}
+      ${reviewNoteSection}
 
       ${divider()}
 
@@ -1138,72 +1107,13 @@ export class MailService {
 
     try {
       await this.sendMail({
+        from: this.from,
         to: opts.to,
-        subject: `Overtime Request ${actionLabel} — ${typeMap[opts.overtimeType] || opts.overtimeType} (${fmt(opts.otDate)})`,
+        subject: `Overtime Request ${actionLabel} – ${fmtDate}`,
         html: emailWrapper(header, body),
       });
     } catch (error) {
       this.logger.error('Failed to send overtime review email', error);
-    }
-  }
-
-  async sendRenewalReminder(
-    to: string,
-    companyName: string,
-    daysRemaining: number,
-    plan: string,
-  ): Promise<void> {
-    const urgency = daysRemaining < 0
-      ? `Your subscription has <strong>expired ${Math.abs(daysRemaining)} days ago</strong>.`
-      : daysRemaining === 0
-        ? `Your subscription <strong>expires today</strong>.`
-        : `Your subscription expires in <strong>${daysRemaining} day${daysRemaining !== 1 ? 's' : ''}</strong>.`;
-
-    const header = emailWrapper(
-      `<div style="background:${STATUS.warning.headerBg};padding:32px 40px 28px;">
-        <div style="font-size:28px;font-weight:700;color:#ffffff;font-family:Poppins,sans-serif;margin-bottom:4px;">Subscription Renewal Reminder</div>
-        <div style="color:rgba(255,255,255,0.7);font-size:14px;">Blues Clues HRIS</div>
-      </div>`,
-      `<p style="font-size:15px;color:${BRAND.textBody};margin:0 0 16px;">${urgency}</p>
-       <p style="font-size:14px;color:${BRAND.textMuted};margin:0 0 8px;"><strong>Company:</strong> ${companyName}</p>
-       <p style="font-size:14px;color:${BRAND.textMuted};margin:0 0 24px;"><strong>Plan:</strong> ${plan ?? 'Professional'}</p>
-       <p style="font-size:13px;color:${BRAND.textMuted};">Please contact support to renew and maintain uninterrupted access.</p>`,
-    );
-
-    try {
-      await this.sendMail({
-        to: normalizeEmail(to),
-        subject: `Renewal Reminder — ${companyName} (${daysRemaining < 0 ? 'Expired' : `${daysRemaining}d left`})`,
-        html: header,
-      });
-    } catch (error) {
-      this.logger.error(`Failed to send renewal reminder to ${to}`, error);
-    }
-  }
-
-  async sendSuspensionNotice(to: string, companyName: string): Promise<void> {
-    const header = emailWrapper(
-      `<div style="background:${STATUS.danger.headerBg};padding:32px 40px 28px;">
-        <div style="font-size:28px;font-weight:700;color:#ffffff;font-family:Poppins,sans-serif;margin-bottom:4px;">Account Suspended</div>
-        <div style="color:rgba(255,255,255,0.7);font-size:14px;">Blues Clues HRIS</div>
-      </div>`,
-      `<p style="font-size:15px;color:${BRAND.textBody};margin:0 0 16px;">
-         Your HRIS account for <strong>${companyName}</strong> has been suspended.
-       </p>
-       <p style="font-size:14px;color:${BRAND.textMuted};margin:0 0 24px;">
-         All user logins are disabled. Contact
-         <a href="mailto:support@bluesclues.com" style="color:${BRAND.accentDark};">support@bluesclues.com</a> to reactivate.
-       </p>`,
-    );
-
-    try {
-      await this.sendMail({
-        to: normalizeEmail(to),
-        subject: `Your Blues Clues HRIS account has been suspended — ${companyName}`,
-        html: header,
-      });
-    } catch (error) {
-      this.logger.error(`Failed to send suspension notice to ${to}`, error);
     }
   }
 }

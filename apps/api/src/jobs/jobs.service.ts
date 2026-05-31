@@ -1,4 +1,4 @@
-﻿import {
+import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
@@ -12,7 +12,7 @@ import * as crypto from 'node:crypto';
 import { PDFParse } from 'pdf-parse';
 import * as mammoth from 'mammoth';
 import WordExtractor from 'word-extractor';
-import { SupabaseService } from '@app/supabase';
+import { SupabaseService } from '../supabase/supabase.service';
 import { AuditService } from '../audit/audit.service';
 import { MailService } from '../mail/mail.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -26,7 +26,6 @@ import { ManualRankingItemDto } from './dto/save-manual-ranking.dto';
 import { ScheduleInterviewDto } from './dto/schedule-interview.dto';
 import { InterviewResponseDto } from './dto/interview-response.dto';
 import { OnboardingService } from '../onboarding/onboarding.service';
-import { isAtLeastAge } from '@app/common';
 
 type RankingMode = 'sfia' | 'manual';
 
@@ -587,7 +586,7 @@ export class JobsService {
     const updates = rankings.map((item) =>
       supabase
         .from('job_application_sfia')
-        .update({ manual_rank_position: item.rank, ranking_mode: 'MANUAL', is_manually_processed: true }) // GAP-2.2 FIX: badge persists
+        .update({ manual_rank_position: item.rank, ranking_mode: 'MANUAL' })
         .eq('job_posting_id', jobPostingId)
         .eq('application_id', item.application_id),
     );
@@ -1478,18 +1477,6 @@ export class JobsService {
 
     if (!company) throw new NotFoundException('Company not found');
 
-    const { data: tenantConfig, error: tenantError } = await supabase
-      .from('tenant_config')
-      .select('branding_settings')
-      .eq('company_id', company.company_id)
-      .maybeSingle();
-
-    if (tenantError && !String(tenantError.message ?? '').toLowerCase().includes('branding_settings')) {
-      throw new InternalServerErrorException(tenantError.message);
-    }
-
-    const branding = (tenantConfig?.branding_settings as Record<string, unknown> | null) ?? null;
-
     const { data: jobs } = await supabase
       .from('job_postings')
       .select('job_posting_id, title, description, location, employment_type, salary_range, posted_at, closes_at')
@@ -1501,14 +1488,6 @@ export class JobsService {
     return {
       company_id: company.company_id,
       company_name: company.company_name,
-      company_display_name:
-        typeof branding?.company_display_name === 'string'
-          ? branding.company_display_name
-          : null,
-      company_logo_url:
-        typeof branding?.company_logo_url === 'string'
-          ? branding.company_logo_url
-          : null,
       slug: company.slug,
       jobs: jobs ?? [],
     };
@@ -1560,17 +1539,11 @@ export class JobsService {
     // Block hired/onboarding applicants from applying to new jobs
     const { data: applicantProfile } = await supabase
       .from('applicant_profile')
-      .select('status, date_of_birth')
+      .select('status')
       .eq('applicant_id', applicantId)
       .maybeSingle();
     if (applicantProfile?.status === 'onboarding' || applicantProfile?.status === 'converted_employee') {
       throw new ForbiddenException('You have already been hired and cannot apply to new positions.');
-    }
-    if (!applicantProfile?.date_of_birth) {
-      throw new ForbiddenException('Please add your date of birth to your profile before applying.');
-    }
-    if (!isAtLeastAge(String(applicantProfile.date_of_birth), 18)) {
-      throw new ForbiddenException('Applicants must be at least 18 years old to apply.');
     }
 
     const { data: existing } = await supabase
@@ -2794,3 +2767,4 @@ export class JobsService {
     }
   }
 }
+

@@ -1,11 +1,11 @@
-﻿import {
+import {
   Injectable,
   InternalServerErrorException,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
 import * as crypto from 'crypto';
-import { SupabaseService } from '@app/supabase';
+import { SupabaseService } from '../supabase/supabase.service';
 import { CreateNotificationDto } from './dto/create-notification.dto';
 
 @Injectable()

@@ -20,18 +20,6 @@
     "forceConsistentCasingInFileNames": true,
     "noImplicitAny": false,
     "strictBindCallApply": false,
-    "noFallthroughCasesInSwitch": false,
-    "paths": {
-      "@app/common": ["libs/common/src"],
-      "@app/common/*": ["libs/common/src/*"],
-      "@app/api-center": ["libs/api-center/src"],
-      "@app/api-center/*": ["libs/api-center/src/*"],
-      "@app/supabase": ["libs/supabase/src"],
-      "@app/supabase/*": ["libs/supabase/src/*"],
-      "@app/contracts": ["libs/contracts/src"],
-      "@app/contracts/*": ["libs/contracts/src/*"]
-    }
-  },
-  "include": ["apps", "libs"],
-  "exclude": ["node_modules", "dist"]
+    "noFallthroughCasesInSwitch": false
+  }
 }

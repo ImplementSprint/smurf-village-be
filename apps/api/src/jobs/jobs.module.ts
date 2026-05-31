@@ -1,6 +1,6 @@
-﻿import { Module } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
-import { SupabaseModule } from '@app/supabase';
+import { SupabaseModule } from '../supabase/supabase.module';
 import { AuditModule } from '../audit/audit.module';
 import { MailModule } from '../mail/mail.module';
 import { OnboardingModule } from '../onboarding/onboarding.module';

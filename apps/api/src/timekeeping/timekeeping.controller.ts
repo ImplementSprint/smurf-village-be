@@ -26,6 +26,8 @@ import { ScheduleEffectiveDateDto } from './dto/schedule-effective-date.dto';
 import { CompanyDefaultScheduleDto } from './dto/company-default-schedule.dto';
 import { ReviewAbsenceDto } from './dto/review-absence.dto';
 import { EditAttendanceDto } from './dto/edit-attendance.dto';
+import { RequestOvertimeDto } from './dto/request-overtime.dto';
+import { ReviewOvertimeDto } from './dto/review-overtime.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -35,14 +37,13 @@ const HR_AND_ABOVE = [
   'Admin',
   'System Admin',
   'HR Officer',
+  'HR Recruiter',
+  'HR Interviewer',
   'Manager',
 ];
 
 // Roles that can create/edit schedules
-const SCHEDULE_MANAGERS = [
-  'System Admin',
-  'HR Officer',
-];
+const SCHEDULE_MANAGERS = ['System Admin', 'HR Officer', 'HR Recruiter', 'HR Interviewer'];
 
 @ApiTags('Timekeeping')
 @ApiBearerAuth()
@@ -384,5 +385,54 @@ export class TimekeepingController {
   @ApiOperation({ summary: 'HR/System Admin: Bulk-assign a schedule to company, department, or selected employees' })
   bulkAssignSchedule(@Body() dto: BulkScheduleDto, @Req() req: any) {
     return this.timekeepingService.bulkAssignSchedule(dto, req.user.company_id, req.user.sub_userid);
+  }
+
+  // ─── Overtime Requests ───────────────────────────────────────────────────────
+
+  @Post('request-overtime')
+  @ApiOperation({
+    summary: 'Employee: Submit an advance overtime request',
+    description:
+      'Requests overtime for a future date. OT types: NORMAL (scheduled workday), ' +
+      'REST_DAY (non-workday), HOLIDAY (any future date). ' +
+      'Overnight OT (end_time <= start_time) is rejected.',
+  })
+  requestOvertime(@Body() dto: RequestOvertimeDto, @Req() req: any) {
+    return this.timekeepingService.createOvertimeRequest(req.user.sub_userid, dto, req);
+  }
+
+  @Get('overtime-requests')
+  @UseGuards(RolesGuard)
+  @Roles(...SCHEDULE_MANAGERS)
+  @ApiOperation({
+    summary: 'HR/System Admin: List employee overtime requests',
+    description: 'Returns OT requests for the company. Defaults to PENDING if status filter is omitted.',
+  })
+  @ApiQuery({ name: 'status', required: false, example: 'PENDING', description: 'PENDING | APPROVED | DENIED | ALL' })
+  @ApiQuery({ name: 'type',   required: false, example: 'NORMAL',  description: 'NORMAL | REST_DAY | HOLIDAY' })
+  getOvertimeRequests(
+    @Req() req: any,
+    @Query('status') status?: string,
+    @Query('type') type?: string,
+  ) {
+    return this.timekeepingService.getOvertimeRequests(req.user.company_id, status, type);
+  }
+
+  @Patch('overtime-requests/:otId/review')
+  @UseGuards(RolesGuard)
+  @Roles(...SCHEDULE_MANAGERS)
+  @ApiOperation({ summary: 'HR/System Admin: Approve or deny an overtime request' })
+  @ApiParam({ name: 'otId', description: 'overtime_requests.ot_id' })
+  reviewOvertimeRequest(
+    @Param('otId') otId: string,
+    @Body() dto: ReviewOvertimeDto,
+    @Req() req: any,
+  ) {
+    return this.timekeepingService.reviewOvertimeRequest(
+      otId,
+      dto,
+      req.user.company_id,
+      req.user.sub_userid,
+    );
   }
 }

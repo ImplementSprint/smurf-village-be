@@ -1,10 +1,10 @@
-﻿import { Module, forwardRef } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
-import { SupabaseModule } from '@app/supabase';
+import { SupabaseModule } from '../supabase/supabase.module';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { ApplicantJwtAuthGuard } from './applicant-jwt-auth.guard';
 import { RolesGuard } from './roles.guard';

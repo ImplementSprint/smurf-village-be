@@ -1,7 +1,7 @@
-﻿import { Injectable, BadRequestException, NotFoundException, Logger, InternalServerErrorException, ForbiddenException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, Logger, InternalServerErrorException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as crypto from 'node:crypto';
-import { SupabaseService } from '@app/supabase';
+import { SupabaseService } from '../supabase/supabase.service';
 import { MailService } from '../mail/mail.service';
 import { AuditService } from '../audit/audit.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -11,39 +11,6 @@ import { CreateTemplateDto } from './dto/create-template.dto';
 import { SaveProfileDto } from './dto/save-profile.dto';
 import { AssignTemplateDto } from './dto/assign-template.dto';
 import { AddRemarkDto } from './dto/add-remark.dto';
-import { normalizeNamePart } from '@app/common';
-
-function getManilaDateKey(date = new Date()): string {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Manila',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(date);
-}
-const MULTI_PORTAL_ELIGIBLE_ROLES = new Set([
-  'hr officer',
-  'hr recruiter',
-  'hr interviewer',
-  'hr compensation and benefits officer',
-  'hr offboarding officer/coordinator',
-  'hr onboarding officer',
-  'hr performance management officer',
-  'manager',
-  'group head',
-  'admin',
-  'system admin',
-]);
-
-function roleNameToPortal(roleName: string | null | undefined): string {
-  const normalized = String(roleName ?? '').trim().toLowerCase();
-  if (normalized === 'system admin') return 'system-admin';
-  if (normalized === 'admin') return 'admin';
-  if (normalized === 'manager' || normalized === 'group head') return 'manager';
-  if (normalized === 'active employee' || normalized === 'employee') return 'employee';
-  if (normalized === 'applicant') return 'applicant';
-  return 'hr';
-}
 
 @Injectable()
 export class OnboardingService {
@@ -146,15 +113,16 @@ export class OnboardingService {
       .from('onboarding_sessions')
       .select('*');
 
-    const sessionLookup = sessionId
-      ? sessionQuery
+    const { data: session, error: sessionErr } = sessionId
+      ? await sessionQuery
           .eq('session_id', sessionId)
           .limit(1)
-      : sessionQuery
+          .maybeSingle()
+      : await sessionQuery
           .eq('account_id', accountId)
           .order('deadline_date', { ascending: false })
-          .limit(1);
-    const { data: session, error: sessionErr } = await sessionLookup.maybeSingle();
+          .limit(1)
+          .maybeSingle();
 
     if (sessionErr) throw new BadRequestException(sessionErr.message);
     if (!session) return null;
@@ -340,12 +308,11 @@ export class OnboardingService {
       account_id: session.account_id,
       template_id: session.template_id,
       template_name: template?.name || null,
-      employee_name:
-        user
-          ? `${user.first_name} ${user.last_name}`
-          : applicantProfile
-            ? `${applicantProfile.first_name} ${applicantProfile.last_name}`
-            : null,
+      employee_name: user
+        ? `${user.first_name} ${user.last_name}`
+        : applicantProfile
+        ? `${applicantProfile.first_name} ${applicantProfile.last_name}`
+        : null,
       employee_id: user?.employee_id || null,
       assigned_position: session.assigned_position,
       assigned_department: session.assigned_department,
@@ -536,9 +503,6 @@ export class OnboardingService {
     const firstContact = dto.emergency_contacts?.[0];
     const payload = {
       ...profileFields,
-      first_name: normalizeNamePart(dto.first_name),
-      middle_name: normalizeNamePart(dto.middle_name) ?? null,
-      last_name: normalizeNamePart(dto.last_name),
       emergency_contacts: dto.emergency_contacts ?? [],
       status: 'submitted',
       // Satisfy legacy NOT NULL columns using first emergency contact as fallback
@@ -913,9 +877,6 @@ export class OnboardingService {
 
     if (sessionError) throw new InternalServerErrorException(sessionError.message);
     if (!sessionRow) throw new NotFoundException('Session not found.');
-    if (hrUserId && String((sessionRow as any).account_id ?? '') === hrUserId) {
-      throw new ForbiddenException('You cannot review your own onboarding session.');
-    }
     if ((sessionRow as any).status !== 'for-review') {
       throw new BadRequestException('Only sessions in "for-review" status can be approved.');
     }
@@ -945,14 +906,11 @@ export class OnboardingService {
       );
     }
 
-    const approvalDate = getManilaDateKey();
-
     // Mark session approved
-    const { error: approveSessionError } = await supabase
+    await supabase
       .from('onboarding_sessions')
       .update({ status: 'approved', completed_at: new Date().toISOString() })
       .eq('session_id', sessionId);
-    if (approveSessionError) throw new InternalServerErrorException(approveSessionError.message);
 
     // Resolve account_id
     const accountId = (sessionRow as any)?.account_id as string | undefined;
@@ -1011,7 +969,6 @@ export class OnboardingService {
                 company_id: applicant.company_id,
                 employee_id: employeeCode,
                 account_status: 'Active',
-                start_date: approvalDate,
                 ...(defaultRole ? { role_id: defaultRole.role_id } : {}),
                 ...(staging?.phone_number ? { phone_number: staging.phone_number } : {}),
                 ...(staging?.complete_address ? { complete_address: staging.complete_address } : {}),
@@ -1035,7 +992,6 @@ export class OnboardingService {
                 companyId: applicant.company_id,
                 employeeId: employeeCode,
                 departmentId: inheritedDepartmentId,
-                effectiveDate: approvalDate,
                 updatedByName: null,
               });
               this.logger.log(`[approveSession] Initial schedule assignment for ${employeeCode}: ${assignment.source}`);
@@ -1117,12 +1073,6 @@ export class OnboardingService {
 
         if (staging) {
           const profileUpdate: Record<string, any> = {};
-          const { data: profileForSync } = await supabase
-            .from('user_profile')
-            .select('start_date')
-            .eq('user_id', resolvedUserId)
-            .maybeSingle();
-          if (!profileForSync?.start_date) profileUpdate.start_date = approvalDate;
           if (staging.email_address != null)   profileUpdate.personal_email   = staging.email_address;
           if (staging.middle_name != null)      profileUpdate.middle_name      = staging.middle_name;
           if (staging.phone_number != null)     profileUpdate.phone_number     = staging.phone_number;
@@ -1218,9 +1168,6 @@ export class OnboardingService {
 
     if (sessionError) throw new InternalServerErrorException(sessionError.message);
     if (!sessionRow) throw new NotFoundException('Session not found.');
-    if (hrUserId && String((sessionRow as any).account_id ?? '') === hrUserId) {
-      throw new ForbiddenException('You cannot review your own onboarding session.');
-    }
     if ((sessionRow as any).status !== 'for-review') {
       throw new BadRequestException('Only sessions in "for-review" status can be rejected.');
     }
@@ -1680,20 +1627,10 @@ export class OnboardingService {
     const supabase = this.supabaseService.getClient();
     const { data: existing } = await supabase
       .from('onboarding_submissions')
-      .select('submission_id, start_date')
+      .select('submission_id')
       .eq('application_id', params.applicationId)
       .maybeSingle();
-    const hireDate = getManilaDateKey();
-    if (existing) {
-      if (!existing.start_date) {
-        const { error: backfillError } = await supabase
-          .from('onboarding_submissions')
-          .update({ start_date: hireDate })
-          .eq('submission_id', existing.submission_id);
-        if (backfillError) throw new InternalServerErrorException(backfillError.message);
-      }
-      return existing;
-    }
+    if (existing) return existing;
 
     const { data: applicant } = await supabase
       .from('applicant_profile')
@@ -1712,7 +1649,6 @@ export class OnboardingService {
         first_name:     applicant?.first_name ?? null,
         last_name:      applicant?.last_name ?? null,
         phone:          applicant?.phone_number ?? null,
-        start_date:     hireDate,
       })
       .select('submission_id')
       .single();
@@ -1753,9 +1689,6 @@ export class OnboardingService {
     const patch: Record<string, any> = {};
     for (const key of allowed) {
       if (body[key] !== undefined) patch[key] = body[key];
-    }
-    for (const key of ['first_name', 'last_name'] as const) {
-      if (patch[key] !== undefined) patch[key] = normalizeNamePart(patch[key]);
     }
     if (Object.keys(patch).length === 0) return { message: 'Nothing to update' };
 
@@ -1851,7 +1784,7 @@ export class OnboardingService {
     return data;
   }
 
-  async approveOnboardingSubmission(submissionId: string, roleId: string, companyId: string, reviewerUserId?: string) {
+  async approveOnboardingSubmission(submissionId: string, roleId: string, companyId: string) {
     const supabase = this.supabaseService.getClient();
     const { data: submission, error: subErr } = await supabase
       .from('onboarding_submissions')
@@ -1861,30 +1794,22 @@ export class OnboardingService {
       .maybeSingle();
     if (subErr) throw new InternalServerErrorException(subErr.message);
     if (!submission) throw new NotFoundException('Submission not found.');
-    if (reviewerUserId && String((submission as any).created_user_id ?? '') === reviewerUserId) {
-      throw new ForbiddenException('You cannot review your own onboarding submission.');
-    }
     if (submission.status !== 'submitted') throw new BadRequestException('Submission must be in "submitted" state to approve.');
     if (!submission.preferred_username) throw new BadRequestException('Applicant must provide a preferred username before approval.');
 
-    const { data: role } = await supabase
-      .from('role')
-      .select('role_id, role_name')
-      .eq('role_id', roleId)
-      .maybeSingle();
+    const { data: role } = await supabase.from('role').select('role_id').eq('role_id', roleId).maybeSingle();
     if (!role) throw new BadRequestException('Selected role does not exist.');
 
     const userId = crypto.randomUUID();
     const employeeCode = `EMP-${Math.floor(1000000 + Math.random() * 9000000)}`;
-    const startDate = submission.start_date ?? getManilaDateKey();
 
     const applicantEmailData = (await supabase.from('applicant_profile').select('email').eq('applicant_id', submission.applicant_id).maybeSingle()).data;
 
     const { error: insertError } = await supabase.from('user_profile').insert({
       user_id: userId,
       email: applicantEmailData?.email ?? '',
-      first_name: normalizeNamePart(submission.first_name) ?? '',
-      last_name: normalizeNamePart(submission.last_name) ?? '',
+      first_name: submission.first_name ?? '',
+      last_name: submission.last_name ?? '',
       role_id: roleId,
       company_id: companyId,
       employee_id: employeeCode,
@@ -1897,62 +1822,16 @@ export class OnboardingService {
       ...(submission.nationality    ? { nationality:       submission.nationality }   : {}),
       ...(submission.civil_status   ? { civil_status:      submission.civil_status }  : {}),
       ...(submission.department_id  ? { department_id:     submission.department_id } : {}),
-      start_date: startDate,
+      ...(submission.start_date     ? { start_date:        submission.start_date }    : {}),
     });
     if (insertError) throw new InternalServerErrorException(insertError.message);
-    await supabase.from('user_role_assignments').upsert(
-      {
-        user_id: userId,
-        role_id: roleId,
-        is_primary: true,
-        is_active: true,
-      },
-      { onConflict: 'user_id,role_id' },
-    );
-
-    await supabase.from('role_portal_map').upsert(
-      {
-        role_id: roleId,
-        portal_key: roleNameToPortal((role as any).role_name),
-      },
-      { onConflict: 'role_id,portal_key' },
-    );
-
-    if (MULTI_PORTAL_ELIGIBLE_ROLES.has(String((role as any).role_name ?? '').trim().toLowerCase())) {
-      const { data: employeeRole } = await supabase
-        .from('role')
-        .select('role_id')
-        .eq('company_id', companyId)
-        .in('role_name', ['Active Employee', 'Employee'])
-        .order('role_name', { ascending: true })
-        .maybeSingle();
-
-      if (employeeRole?.role_id) {
-        await supabase.from('user_role_assignments').upsert(
-          {
-            user_id: userId,
-            role_id: String(employeeRole.role_id),
-            is_primary: false,
-            is_active: true,
-          },
-          { onConflict: 'user_id,role_id' },
-        );
-        await supabase.from('role_portal_map').upsert(
-          {
-            role_id: String(employeeRole.role_id),
-            portal_key: 'employee',
-          },
-          { onConflict: 'role_id,portal_key' },
-        );
-      }
-    }
 
     try {
       const assignment = await this.timekeepingService.assignInitialScheduleForEmployee({
         companyId,
         employeeId: employeeCode,
         departmentId: submission.department_id ?? null,
-        effectiveDate: startDate,
+        effectiveDate: submission.start_date ?? null,
         updatedByName: null,
       });
       this.logger.log(`[approveOnboardingSubmission] Initial schedule assignment for ${employeeCode}: ${assignment.source}`);
@@ -2091,18 +1970,15 @@ export class OnboardingService {
     return { user_id: userId, employee_id: employeeCode, email: applicant?.email ?? '', invite_expires_at: expiresAt };
   }
 
-  async rejectOnboardingSubmission(submissionId: string, hrNotes: string, companyId: string, reviewerUserId?: string) {
+  async rejectOnboardingSubmission(submissionId: string, hrNotes: string, companyId: string) {
     const supabase = this.supabaseService.getClient();
     const { data: submission } = await supabase
       .from('onboarding_submissions')
-      .select('submission_id, status, created_user_id')
+      .select('submission_id, status')
       .eq('submission_id', submissionId)
       .eq('company_id', companyId)
       .maybeSingle();
     if (!submission) throw new NotFoundException('Submission not found.');
-    if (reviewerUserId && String((submission as any).created_user_id ?? '') === reviewerUserId) {
-      throw new ForbiddenException('You cannot review your own onboarding submission.');
-    }
     if (submission.status !== 'submitted') throw new BadRequestException('Only submitted onboarding forms can be rejected.');
     const { error } = await supabase
       .from('onboarding_submissions')

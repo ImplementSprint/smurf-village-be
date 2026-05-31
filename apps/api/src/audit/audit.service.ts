@@ -1,5 +1,5 @@
-﻿import { Injectable, InternalServerErrorException } from '@nestjs/common';
-import { SupabaseService } from '@app/supabase';
+import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import { SupabaseService } from '../supabase/supabase.service';
 
 export type IncidentSeverity = 'WARNING' | 'ERROR' | 'CRITICAL';
 

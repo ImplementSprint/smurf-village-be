@@ -1,17 +1,16 @@
-﻿import {
+import {
   BadRequestException,
+  ConflictException,
   Injectable,
   InternalServerErrorException,
   Logger,
   NotFoundException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as crypto from 'node:crypto';
-import { PaymentCheckoutSession } from '@implementsprint/sdk';
-import { ApiCenterSdkService } from '@app/api-center';
 import { MailService } from '../mail/mail.service';
-import { SupabaseService } from '@app/supabase';
-import { CreateCheckoutDto } from './dto/create-checkout.dto';
+import { SupabaseService } from '../supabase/supabase.service';
 import { PaymentConfirmDto } from './dto/payment-confirm.dto';
 import { RegisterCompanyDto } from './dto/register-company.dto';
 import { SelectPlanDto } from './dto/select-plan.dto';
@@ -41,7 +40,6 @@ export class SubscriptionService {
     private readonly supabaseService: SupabaseService,
     private readonly mailService: MailService,
     private readonly config: ConfigService,
-    private readonly apiCenterSdkService: ApiCenterSdkService,
   ) {}
 
   getPlans() {
@@ -148,64 +146,19 @@ export class SubscriptionService {
     return data;
   }
 
-  async createCheckout(dto: CreateCheckoutDto): Promise<{ checkout_url: string; checkout_id: string }> {
-    const supabase = this.supabaseService.getClient();
-
-    const { data: registration, error: fetchErr } = await supabase
-      .from('company_registrations')
-      .select('registration_id, payment_status, subscription_plan, billing_cycle, company_name, email')
-      .eq('registration_id', dto.registration_id)
-      .maybeSingle();
-
-    if (fetchErr) throw new InternalServerErrorException(fetchErr.message);
-    if (!registration) throw new NotFoundException('Registration not found');
-    if (registration.payment_status === 'Paid') {
-      throw new BadRequestException('Payment already completed for this registration');
+  async confirmPayment(dto: PaymentConfirmDto, webhookSecret: string) {
+    const expectedSecret = this.config.get<string>('SUBSCRIPTION_WEBHOOK_SECRET') ?? '';
+    let secretValid = false;
+    try {
+      secretValid = crypto.timingSafeEqual(
+        Buffer.from(webhookSecret ?? ''),
+        Buffer.from(expectedSecret),
+      );
+    } catch {
+      secretValid = false;
     }
+    if (!secretValid) throw new UnauthorizedException('Invalid webhook secret');
 
-    const isAnnual = (registration.subscription_plan ?? registration.billing_cycle) === 'annual';
-    const amountCentavos = isAnnual ? 2999900 : 299900; // ₱29,999 or ₱2,999
-    const planName = isAnnual ? 'Annual Plan' : 'Monthly Plan';
-
-    const appUrl = this.config.get<string>('APP_URL') ?? 'http://localhost:3000';
-    const successUrl = `${appUrl}/payment/success?registration_id=${dto.registration_id}`;
-    const cancelUrl = `${appUrl}/payment/cancel?registration_id=${dto.registration_id}`;
-
-    const session = await this.apiCenterSdkService
-      .getClient()
-      .paymentCreateCheckoutSession({
-        referenceId: dto.registration_id,
-        idempotencyKey: dto.registration_id,
-        successUrl,
-        cancelUrl,
-        lineItems: [
-          {
-            name: planName,
-            quantity: 1,
-            amount: { value: amountCentavos, currency: 'PHP' },
-          },
-        ],
-      })
-      .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        this.logger.error(`paymentCreateCheckoutSession failed: ${message}`);
-        throw new InternalServerErrorException(`Payment gateway error: ${message}`);
-      });
-
-    const checkoutId = session.checkoutId;
-    const checkoutUrl = session.redirectUrl;
-
-    const { error: updateErr } = await supabase
-      .from('company_registrations')
-      .update({ checkout_id: checkoutId })
-      .eq('registration_id', dto.registration_id);
-
-    if (updateErr) throw new InternalServerErrorException(updateErr.message);
-
-    return { checkout_url: checkoutUrl, checkout_id: checkoutId };
-  }
-
-  async confirmPayment(dto: PaymentConfirmDto) {
     const supabase = this.supabaseService.getClient();
 
     const { data: registration, error: fetchErr } = await supabase
@@ -216,11 +169,6 @@ export class SubscriptionService {
 
     if (fetchErr) throw new InternalServerErrorException(fetchErr.message);
     if (!registration) throw new NotFoundException('Registration not found');
-    if (!registration.checkout_id) {
-      throw new BadRequestException(
-        'Missing checkout session for this registration',
-      );
-    }
 
     if (registration.payment_status === 'Paid') {
       if (registration.company_id) {
@@ -237,43 +185,25 @@ export class SubscriptionService {
       };
     }
 
-    // PayMongo confirms async via webhook → API Center → status update.
-    // Poll up to 5x with 2s delay to give the webhook time to process.
-    const MAX_ATTEMPTS = 5;
-    const POLL_INTERVAL_MS = 2000;
-    let checkoutSession: PaymentCheckoutSession | undefined;
-    for (let i = 0; i < MAX_ATTEMPTS; i++) {
-      checkoutSession = await this.apiCenterSdkService
-        .getClient()
-        .paymentGetCheckoutStatus(registration.checkout_id);
-      if (checkoutSession.status === 'paid') break;
-      if (i < MAX_ATTEMPTS - 1) await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
-    }
+    const { data: dupeTxn } = await supabase
+      .from('company_registrations')
+      .select('registration_id')
+      .eq('transaction_id', dto.transaction_id)
+      .neq('registration_id', dto.registration_id)
+      .maybeSingle();
 
-    if (checkoutSession!.status !== 'paid') {
-      const isDev = this.config.get<string>('NODE_ENV') !== 'production';
-      if (isDev) {
-        this.logger.warn(
-          `DEV MODE: Checkout status "${checkoutSession!.status}" — trusting PayMongo successUrl redirect. Proceeding as paid.`,
-        );
-      } else {
-        throw new BadRequestException(
-          `Checkout not paid yet. Current status: ${checkoutSession!.status}`,
-        );
-      }
+    if (dupeTxn) {
+      throw new ConflictException(
+        'Transaction ID already used by another registration',
+      );
     }
-
-    const transactionId =
-      checkoutSession!.referenceId ??
-      checkoutSession!.checkoutId ??
-      registration.checkout_id;
 
     const { error: paymentErr } = await supabase
       .from('company_registrations')
       .update({
         payment_status: 'Paid',
         payment_date: new Date().toISOString(),
-        transaction_id: transactionId,
+        transaction_id: dto.transaction_id,
         subscription_status: 'Active',
       })
       .eq('registration_id', dto.registration_id);
@@ -291,14 +221,6 @@ export class SubscriptionService {
   private async provisionTenant(registration: Record<string, any>) {
     const supabase = this.supabaseService.getClient();
 
-    // Guard against concurrent/idempotent calls (e.g. React StrictMode double-invoke)
-    const { data: freshReg } = await supabase
-      .from('company_registrations')
-      .select('company_id')
-      .eq('registration_id', registration.registration_id)
-      .single();
-    if (freshReg?.company_id) return;
-
     const slug = generateSlug(registration.company_name);
     const { data: company, error: companyErr } = await supabase
       .from('company')
@@ -306,30 +228,12 @@ export class SubscriptionService {
       .select('company_id')
       .single();
 
-    let company_id: string;
     if (companyErr) {
-      // 23505 = unique_violation — concurrent request already created the company
-      if (companyErr.code === '23505') {
-        const { data: existing, error: fetchErr } = await supabase
-          .from('company')
-          .select('company_id')
-          .eq('slug', slug)
-          .single();
-        if (fetchErr || !existing) {
-          throw new InternalServerErrorException(`Company creation failed: ${companyErr.message}`);
-        }
-        // Link the existing company and exit — the other request handles the rest
-        await supabase
-          .from('company_registrations')
-          .update({ company_id: existing.company_id })
-          .eq('registration_id', registration.registration_id);
-        return;
-      }
       throw new InternalServerErrorException(
         `Company creation failed: ${companyErr.message}`,
       );
     }
-    company_id = company!.company_id;
+    const { company_id } = company;
 
     await supabase
       .from('company_registrations')
@@ -344,8 +248,8 @@ export class SubscriptionService {
     });
 
     await supabase.from('tenant_modules').upsert(
-      MODULES.map((module) => ({ company_id, module_name: module, status: 'Active' })),
-      { onConflict: 'company_id,module_name' },
+      MODULES.map((module) => ({ company_id, module, status: 'Active' })),
+      { onConflict: 'company_id,module' },
     );
 
     const roleId = await this.getOrCreateSystemAdminRole(company_id);

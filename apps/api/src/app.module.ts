@@ -1,15 +1,15 @@
-﻿import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { ScheduleModule } from '@nestjs/schedule';
-import { ApiCenterSdkModule } from '@app/api-center';
-import { ApiController } from './api.controller';
-import { ApiService } from './api.service';
-import { validateEnv } from '@app/common';
-import { CorrelationIdMiddleware } from '@app/common';
+import { ApiCenterSdkModule } from './api-center/api-center-sdk.module';
+import { AppController } from './app.controller';
+import { AppService } from './app.service';
+import { validateEnv } from './common/env/validate-env';
+import { CorrelationIdMiddleware } from './common/middleware/correlation-id.middleware';
 import { HealthModule } from './health/health.module';
 import { AuthModule } from './auth/auth.module';
-import { SupabaseModule } from '@app/supabase';
+import { SupabaseModule } from './supabase/supabase.module';
 import { UsersModule } from './users/users.module';
 import { MailModule } from './mail/mail.module';
 import { TimekeepingModule } from './timekeeping/timekeeping.module';
@@ -19,14 +19,6 @@ import { AuditModule } from './audit/audit.module';
 import { OnboardingModule } from './onboarding/onboarding.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { SubscriptionModule } from './subscription/subscription.module';
-import { LeaveModule } from './leave/leave.module';
-import { OvertimeModule } from './overtime/overtime.module';
-import { LeaveBalancesModule } from './leave-balances/leave-balances.module';
-import { PayrollModule } from './payroll/payroll.module';
-import { CnbModule } from './cnb/cnb.module';
-import { OffboardingModule } from './offboarding/offboarding.module';
-import { PerformanceModule } from './performance/performance.module';
-import { SuperAdminModule } from './super-admin/super-admin.module';
 
 const shouldValidateEnv = process.env.NODE_ENV === 'production';
 
@@ -39,7 +31,7 @@ const shouldValidateEnv = process.env.NODE_ENV === 'production';
       ...(shouldValidateEnv ? { validate: validateEnv } : {}),
     }),
     ScheduleModule.forRoot(),
-    ThrottlerModule.forRoot([{ ttl: 60000, limit: 300 }]),
+    ThrottlerModule.forRoot([{ ttl: 60000, limit: 10 }]),
     SupabaseModule,
     ApiCenterSdkModule,
     HealthModule,
@@ -53,19 +45,11 @@ const shouldValidateEnv = process.env.NODE_ENV === 'production';
     OnboardingModule,
     NotificationsModule,
     SubscriptionModule,
-    LeaveModule,
-    OvertimeModule,
-    LeaveBalancesModule,
-    PayrollModule,
-    CnbModule,
-    OffboardingModule,
-    PerformanceModule,
-    SuperAdminModule,
   ],
-  controllers: [ApiController],
-  providers: [ApiService],
+  controllers: [AppController],
+  providers: [AppService],
 })
-export class ApiModule implements NestModule {
+export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
     consumer.apply(CorrelationIdMiddleware).forRoutes('*');
   }

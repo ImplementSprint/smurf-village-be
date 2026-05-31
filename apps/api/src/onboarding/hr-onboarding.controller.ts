@@ -9,14 +9,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 
-const HR_ONLY = [
-  'HR Officer',
-  'HR Recruiter',
-  'HR Interviewer',
-  'HR Onboarding Officer',
-  'Admin',
-  'System Admin',
-];
+const HR_ONLY = ['HR Officer', 'HR Recruiter', 'Admin', 'System Admin'];
 
 @ApiTags('HR Onboarding Management')
 @ApiBearerAuth()

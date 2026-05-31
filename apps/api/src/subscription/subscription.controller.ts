@@ -1,6 +1,5 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, UseGuards } from '@nestjs/common';
 import { ThrottlerGuard } from '@nestjs/throttler';
-import { CreateCheckoutDto } from './dto/create-checkout.dto';
 import { PaymentConfirmDto } from './dto/payment-confirm.dto';
 import { RegisterCompanyDto } from './dto/register-company.dto';
 import { SelectPlanDto } from './dto/select-plan.dto';
@@ -26,14 +25,12 @@ export class SubscriptionController {
     return this.subscriptionService.selectPlan(dto);
   }
 
-  @Post('payment/create-checkout')
-  createCheckout(@Body() dto: CreateCheckoutDto) {
-    return this.subscriptionService.createCheckout(dto);
-  }
-
   @Post('payment/confirm')
-  confirmPayment(@Body() dto: PaymentConfirmDto) {
-    return this.subscriptionService.confirmPayment(dto);
+  confirmPayment(
+    @Body() dto: PaymentConfirmDto,
+    @Headers('x-webhook-secret') secret: string,
+  ) {
+    return this.subscriptionService.confirmPayment(dto, secret);
   }
 
   @Get('registration/:id/status')

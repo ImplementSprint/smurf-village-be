@@ -1,13 +1,12 @@
-﻿import {
+import {
   Injectable,
   BadRequestException,
   ForbiddenException,
-  InternalServerErrorException,
   NotFoundException,
   Logger,
 } from '@nestjs/common';
 import * as crypto from 'node:crypto';
-import { SupabaseService } from '@app/supabase';
+import { SupabaseService } from '../supabase/supabase.service';
 import { MailService } from '../mail/mail.service';
 import { TimePunchDto } from './dto/time-punch.dto';
 import { ReportAbsenceDto } from './dto/report-absence.dto';
@@ -20,8 +19,36 @@ import {
   AbsenceReviewAction,
 } from './dto/review-absence.dto';
 import { EditAttendanceDto } from './dto/edit-attendance.dto';
+import {
+  RequestOvertimeDto,
+  OvertimeType,
+} from './dto/request-overtime.dto';
+import {
+  ReviewOvertimeDto,
+  OvertimeReviewAction,
+} from './dto/review-overtime.dto';
 
 type AttendanceLogType = 'time-in' | 'time-out' | 'break-start' | 'break-end' | 'absence';
+
+type OvertimeRow = {
+  ot_id: string;
+  employee_id: string;
+  ot_type: 'NORMAL' | 'REST_DAY' | 'HOLIDAY';
+  ot_date: string;
+  start_time: string;
+  end_time: string;
+  planned_hours: number;
+  reason: string | null;
+  log_status: 'PENDING' | 'APPROVED' | 'DENIED';
+  latitude: number | null;
+  longitude: number | null;
+  ip_address: string | null;
+  requested_by: string;
+  created_at: string;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  review_reason: string | null;
+};
 type ClockType =
   | 'ON-TIME'
   | 'LATE'
@@ -81,12 +108,6 @@ type CompanyDefaultScheduleRow = {
   updated_by?: string | null;
   updated_by_name?: string | null;
   updated_at?: string | null;
-};
-
-type CompanyHolidayRow = {
-  holiday_date: string;
-  pay_multiplier?: number | null;
-  allow_time_logs?: boolean | null;
 };
 
 type EmployeeDepartmentRelation =
@@ -370,49 +391,6 @@ export class TimekeepingService {
 
     if (error) throw new Error(error.message);
     return data?.employee_id ?? null;
-  }
-
-  private async getUserAttendanceProfile(userId: string): Promise<{
-    employee_id: string | null;
-    company_id: string | null;
-  }> {
-    const supabase = this.supabaseService.getClient();
-    const { data, error } = await supabase
-      .from('user_profile')
-      .select('employee_id, company_id')
-      .eq('user_id', userId)
-      .maybeSingle();
-
-    if (error) throw new Error(error.message);
-    return {
-      employee_id: data?.employee_id ?? null,
-      company_id: data?.company_id ?? null,
-    };
-  }
-
-  private async getCompanyHolidayForDate(
-    companyId: string | null | undefined,
-    dateKey: string,
-  ): Promise<CompanyHolidayRow | null> {
-    if (!companyId) return null;
-
-    const supabase = this.supabaseService.getClient();
-    const { data, error } = await supabase
-      .from('company_holidays')
-      .select('holiday_date, pay_multiplier, allow_time_logs')
-      .eq('company_id', companyId)
-      .eq('holiday_date', dateKey)
-      .maybeSingle<CompanyHolidayRow>();
-
-    if (error) {
-      const message = String(error.message ?? '').toLowerCase();
-      if (message.includes('company_holidays') && message.includes('does not exist')) {
-        return null;
-      }
-      throw new Error(error.message);
-    }
-
-    return data ?? null;
   }
 
   private getManilaDateString(date = new Date()): string {
@@ -795,24 +773,40 @@ export class TimekeepingService {
     const supabase = this.supabaseService.getClient();
     const { date: today } = todayRange();
 
-    const profile = await this.getUserAttendanceProfile(userId);
-    const employeeId = profile.employee_id;
+    const employeeId = await this.getEmployeeId(userId);
     if (!employeeId) {
       throw new BadRequestException(
         'Employee profile not found. Cannot record time-in.',
       );
     }
 
-    const [schedule, existing, holiday] = await Promise.all([
-      this.getScheduleForToday(employeeId),
+    const manilaDate = this.getManilaDateString();
+    const [rawSchedule, existing] = await Promise.all([
+      this.getScheduleForEmployee(employeeId, manilaDate),
       this.getLatestLogForToday(employeeId),
-      this.getCompanyHolidayForDate(profile.company_id, today),
     ]);
 
-    if (!schedule && !holiday?.allow_time_logs) {
+    if (!rawSchedule) {
       throw new ForbiddenException(
         'No schedule has been assigned to you. Contact HR to set up your work schedule.',
       );
+    }
+
+    let schedule: ScheduleRow;
+    if (this.isScheduledForDate(rawSchedule.workdays, manilaDate)) {
+      schedule = rawSchedule;
+    } else {
+      const ot = await this.getApprovedOvertimeForDate(employeeId, manilaDate);
+      if (!ot || ot.ot_type !== 'REST_DAY') {
+        throw new ForbiddenException(
+          'Today is your rest day. Clock-in requires an approved Rest Day overtime request for this date.',
+        );
+      }
+      schedule = {
+        ...rawSchedule,
+        start_time: ot.start_time,
+        end_time:   ot.end_time,
+      };
     }
 
     if (
@@ -837,27 +831,21 @@ export class TimekeepingService {
     }
 
     const nowDate = new Date();
-    if (schedule) {
-      const { shiftEnd } = this.buildScheduleWindow(schedule, nowDate);
+    const { shiftEnd } = this.buildScheduleWindow(schedule, nowDate);
 
-      if (nowDate.getTime() > shiftEnd.getTime()) {
-        await this.createSystemAbsentLog(
-          employeeId,
-          'Automatically marked absent: attempted clock-in after scheduled shift end.',
-        );
-        throw new BadRequestException(
-          'Clock-in is no longer allowed after your scheduled end time. You were marked absent for today.',
-        );
-      }
+    if (nowDate.getTime() > shiftEnd.getTime()) {
+      await this.createSystemAbsentLog(
+        employeeId,
+        'Automatically marked absent: attempted clock-in after scheduled shift end.',
+      );
+      throw new BadRequestException(
+        'Clock-in is no longer allowed after your scheduled end time. You were marked absent for today.',
+      );
     }
 
     const now = nowDate.toISOString();
     const log_id = crypto.randomUUID();
-    const clockType = schedule
-      ? this.computeClockTypeForTimeIn(nowDate, schedule)
-      : holiday
-        ? 'ON-TIME'
-        : null;
+    const clockType = schedule ? this.computeClockTypeForTimeIn(nowDate, schedule) : null;
 
     const { error: insertError } = await supabase
       .from('attendance_time_logs')
@@ -911,24 +899,42 @@ export class TimekeepingService {
     const supabase = this.supabaseService.getClient();
     const { date: today } = todayRange();
 
-    const profile = await this.getUserAttendanceProfile(userId);
-    const employeeId = profile.employee_id;
+    const employeeId = await this.getEmployeeId(userId);
     if (!employeeId) {
       throw new BadRequestException(
         'Employee profile not found. Cannot record time-out.',
       );
     }
 
-    const [schedule, lastPunch, holiday] = await Promise.all([
-      this.getScheduleForToday(employeeId),
+    const manilaDate = this.getManilaDateString();
+    const [rawSchedule, lastPunch] = await Promise.all([
+      this.getScheduleForEmployee(employeeId, manilaDate),
       this.getLatestLogForToday(employeeId),
-      this.getCompanyHolidayForDate(profile.company_id, today),
     ]);
 
-    if (!schedule && !holiday?.allow_time_logs) {
+    if (!rawSchedule) {
       throw new ForbiddenException(
         'No schedule has been assigned to you. Contact HR to set up your work schedule.',
       );
+    }
+
+    let schedule: ScheduleRow;
+    let approvedOt: OvertimeRow | null = null;
+    if (this.isScheduledForDate(rawSchedule.workdays, manilaDate)) {
+      schedule = rawSchedule;
+      approvedOt = await this.getApprovedOvertimeForDate(employeeId, manilaDate);
+    } else {
+      approvedOt = await this.getApprovedOvertimeForDate(employeeId, manilaDate);
+      if (!approvedOt || approvedOt.ot_type !== 'REST_DAY') {
+        throw new ForbiddenException(
+          'Today is your rest day. Clock-out requires an approved Rest Day overtime request for this date.',
+        );
+      }
+      schedule = {
+        ...rawSchedule,
+        start_time: approvedOt.start_time,
+        end_time:   approvedOt.end_time,
+      };
     }
 
     if (!lastPunch) {
@@ -952,11 +958,7 @@ export class TimekeepingService {
     const nowDate = new Date();
     const now = nowDate.toISOString();
     const log_id = crypto.randomUUID();
-    const clockType = schedule
-      ? this.computeClockTypeForTimeOut(nowDate, schedule)
-      : holiday
-        ? 'ON-TIME'
-        : null;
+    const clockType = schedule ? this.computeClockTypeForTimeOut(nowDate, schedule) : null;
 
     const { error: insertError } = await supabase
       .from('attendance_time_logs')
@@ -990,6 +992,24 @@ export class TimekeepingService {
 
     this.logger.log(`time-out recorded — employee: ${employeeId} at ${now}`);
 
+    let overtimeCredited = false;
+    if (clockType === 'OVERTIME' && approvedOt) {
+      const [os, om] = approvedOt.start_time.split(':').map(Number);
+      const [oe, oem] = approvedOt.end_time.split(':').map(Number);
+      const otStartMs = os * 60 + om;
+      const otEndMs   = oe * 60 + oem;
+      const nowManila = nowDate.toLocaleTimeString('en-US', {
+        hour12: false, hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Manila',
+      });
+      const [nh, nm] = nowManila.split(':').map(Number);
+      const nowMins = nh * 60 + nm;
+      if (approvedOt.ot_type === 'REST_DAY') {
+        overtimeCredited = true;
+      } else {
+        overtimeCredited = nowMins >= otStartMs && nowMins <= otEndMs;
+      }
+    }
+
     return {
       log_id,
       employee_id: employeeId,
@@ -1003,6 +1023,7 @@ export class TimekeepingService {
       longitude: dto.longitude,
       location_name: locationName,
       date: today,
+      overtime_credited: overtimeCredited,
     };
   }
 
@@ -1021,10 +1042,11 @@ export class TimekeepingService {
       };
     }
 
-    const schedule = await this.getScheduleForEmployee(
-      employeeId,
-      this.getManilaDateString(),
-    ).catch(() => null);
+    const manilaToday = this.getManilaDateString();
+    const [schedule, approvedOt] = await Promise.all([
+      this.getScheduleForEmployee(employeeId, manilaToday).catch(() => null),
+      this.getApprovedOvertimeForDate(employeeId, manilaToday).catch(() => null),
+    ]);
 
     const { data, error } = await supabase
       .from('attendance_time_logs')
@@ -1058,6 +1080,16 @@ export class TimekeepingService {
             start_time: schedule.start_time,
             end_time: schedule.end_time,
             is_nightshift: schedule.is_nightshift,
+          }
+        : null,
+      approved_overtime: approvedOt
+        ? {
+            ot_id:         approvedOt.ot_id,
+            ot_type:       approvedOt.ot_type,
+            ot_date:       approvedOt.ot_date,
+            start_time:    approvedOt.start_time,
+            end_time:      approvedOt.end_time,
+            planned_hours: approvedOt.planned_hours,
           }
         : null,
     };
@@ -1115,6 +1147,17 @@ export class TimekeepingService {
           entry.absence.reviewed_by_name =
             nameMap[entry.absence.reviewed_by] ?? null;
         }
+      }
+    }
+
+    // Attach approved overtime per date
+    if (entries.length > 0) {
+      const dates = (entries as any[]).map((e) => e.date).filter(Boolean);
+      const fromDate = [...dates].sort()[0];
+      const toDate   = [...dates].sort().at(-1)!;
+      const otMap = await this.getApprovedOvertimeMap(employeeId, fromDate, toDate).catch(() => new Map());
+      for (const entry of entries as any[]) {
+        entry.overtime = otMap.get(entry.date) ?? null;
       }
     }
 
@@ -1386,6 +1429,16 @@ export class TimekeepingService {
       }
     }
 
+    // OT conflict guard: block absence if approved OT exists on any date in range
+    for (const date of absenceDates) {
+      const ot = await this.getApprovedOvertimeForDate(employeeId, date);
+      if (ot) {
+        throw new BadRequestException(
+          `You have approved overtime on ${date}. Cannot report absence on that date.`,
+        );
+      }
+    }
+
     const now = new Date().toISOString();
     const rows = absenceDates.map((date) => ({
       log_id: crypto.randomUUID(),
@@ -1506,7 +1559,7 @@ export class TimekeepingService {
       .eq('log_id', logId)
       .maybeSingle();
 
-    if (targetError) throw new InternalServerErrorException(targetError.message);
+    if (targetError) throw new Error(targetError.message);
     if (!target || target.log_type !== 'absence') {
       throw new NotFoundException('Absence request not found.');
     }
@@ -1518,11 +1571,8 @@ export class TimekeepingService {
       .eq('company_id', companyId)
       .maybeSingle();
 
-    if (ownerError) throw new InternalServerErrorException(ownerError.message);
+    if (ownerError) throw new Error(ownerError.message);
     if (!owner) throw new NotFoundException('Absence request not found in your company.');
-    if (String(owner.user_id ?? '') === reviewerUserId) {
-      throw new ForbiddenException('You cannot review your own absence request.');
-    }
 
     const nextStatus =
       dto.action === AbsenceReviewAction.APPROVE ? 'APPROVED' : 'DENIED';
@@ -1549,7 +1599,7 @@ export class TimekeepingService {
         .maybeSingle(),
     ]);
 
-    if (updateError) throw new InternalServerErrorException(updateError.message);
+    if (updateError) throw new Error(updateError.message);
     if (!updated) throw new NotFoundException('Absence request not found.');
 
     const reviewerName = reviewer
@@ -2929,5 +2979,308 @@ export class TimekeepingService {
     }
 
     return Object.values(grouped).sort((a, b) => b.date.localeCompare(a.date));
+  }
+
+  private computePlannedHours(startTime: string, endTime: string): number {
+    const [sh, sm] = startTime.split(':').map(Number);
+    const [eh, em] = endTime.split(':').map(Number);
+    const startMins = sh * 60 + sm;
+    const endMins   = eh * 60 + em;
+    if (endMins <= startMins) {
+      throw new BadRequestException(
+        'Overnight overtime is not supported. End time must be after start time.',
+      );
+    }
+    const hours = (endMins - startMins) / 60;
+    if (hours <= 0 || hours > 24) {
+      throw new BadRequestException('Planned overtime hours must be between 0 and 24.');
+    }
+    return Math.round(hours * 100) / 100;
+  }
+
+  private async getApprovedOvertimeForDate(
+    employeeId: string,
+    dateStr: string,
+  ): Promise<OvertimeRow | null> {
+    const supabase = this.supabaseService.getClient();
+    const { data, error } = await supabase
+      .from('overtime_requests')
+      .select('*')
+      .eq('employee_id', employeeId)
+      .eq('ot_date', dateStr)
+      .eq('log_status', 'APPROVED')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle<OvertimeRow>();
+
+    if (error) throw new Error(error.message);
+    return data ?? null;
+  }
+
+  private async getApprovedOvertimeMap(
+    employeeId: string,
+    fromDate: string,
+    toDate: string,
+  ): Promise<Map<string, OvertimeRow>> {
+    const supabase = this.supabaseService.getClient();
+    const { data, error } = await supabase
+      .from('overtime_requests')
+      .select('*')
+      .eq('employee_id', employeeId)
+      .eq('log_status', 'APPROVED')
+      .gte('ot_date', fromDate)
+      .lte('ot_date', toDate);
+
+    if (error) throw new Error(error.message);
+    const map = new Map<string, OvertimeRow>();
+    for (const row of (data ?? []) as OvertimeRow[]) {
+      if (!map.has(row.ot_date)) map.set(row.ot_date, row);
+    }
+    return map;
+  }
+
+  async createOvertimeRequest(userId: string, dto: RequestOvertimeDto, req?: any) {
+    const supabase = this.supabaseService.getClient();
+
+    const employeeId = await this.getEmployeeId(userId);
+    if (!employeeId) {
+      throw new BadRequestException('Employee profile not found. Cannot request overtime.');
+    }
+
+    const otDate = this.ensureIsoDate(dto.ot_date);
+    const today  = this.getManilaDateString();
+
+    if (otDate <= today) {
+      throw new BadRequestException(
+        'Overtime must be requested in advance — date must be after today.',
+      );
+    }
+
+    const plannedHours = this.computePlannedHours(dto.start_time, dto.end_time);
+
+    if (dto.ot_type === OvertimeType.NORMAL || dto.ot_type === OvertimeType.REST_DAY) {
+      const schedule = await this.getScheduleForEmployee(employeeId, otDate);
+      if (!schedule) {
+        throw new BadRequestException(
+          'No schedule found for this date. Cannot determine work/rest day.',
+        );
+      }
+      const isWorkday = this.isScheduledForDate(schedule.workdays, otDate);
+      if (dto.ot_type === OvertimeType.NORMAL && !isWorkday) {
+        throw new BadRequestException(
+          'Normal overtime can only be requested on a scheduled workday.',
+        );
+      }
+      if (dto.ot_type === OvertimeType.REST_DAY && isWorkday) {
+        throw new BadRequestException(
+          'Rest Day overtime can only be requested on a rest day (non-workday).',
+        );
+      }
+    }
+
+    // Overlap guard: no existing PENDING or APPROVED OT on same date with overlapping window
+    const [sh, sm] = dto.start_time.split(':').map(Number);
+    const [eh, em] = dto.end_time.split(':').map(Number);
+    const newStart = sh * 60 + sm;
+    const newEnd   = eh * 60 + em;
+
+    const { data: existing, error: existingError } = await supabase
+      .from('overtime_requests')
+      .select('ot_id, start_time, end_time, log_status')
+      .eq('employee_id', employeeId)
+      .eq('ot_date', otDate)
+      .in('log_status', ['PENDING', 'APPROVED']);
+
+    if (existingError) throw new Error(existingError.message);
+
+    for (const row of existing ?? []) {
+      const [rs, rm] = (row.start_time as string).split(':').map(Number);
+      const [re, rem] = (row.end_time as string).split(':').map(Number);
+      const rowStart = rs * 60 + rm;
+      const rowEnd   = re * 60 + rem;
+      if (newStart < rowEnd && newEnd > rowStart) {
+        throw new BadRequestException(
+          'An overlapping overtime request already exists for this date and time window.',
+        );
+      }
+    }
+
+    // Absence-conflict guard
+    const dayStart = `${otDate}T00:00:00.000+08:00`;
+    const dayEnd   = `${otDate}T23:59:59.999+08:00`;
+    const { data: absenceLogs, error: absenceError } = await supabase
+      .from('attendance_time_logs')
+      .select('log_id')
+      .eq('employee_id', employeeId)
+      .eq('log_type', 'absence')
+      .neq('log_status', 'DENIED')
+      .gte('timestamp', dayStart)
+      .lte('timestamp', dayEnd)
+      .limit(1);
+
+    if (absenceError) throw new Error(absenceError.message);
+    if ((absenceLogs ?? []).length > 0) {
+      throw new BadRequestException(
+        `You have a non-denied absence on ${otDate}. Cannot request overtime on that date.`,
+      );
+    }
+
+    const otId = crypto.randomUUID();
+    const { error: insertError } = await supabase.from('overtime_requests').insert({
+      ot_id: otId,
+      employee_id: employeeId,
+      ot_type: dto.ot_type,
+      ot_date: otDate,
+      start_time: dto.start_time,
+      end_time: dto.end_time,
+      planned_hours: plannedHours,
+      reason: dto.reason ?? null,
+      log_status: 'PENDING',
+      latitude: dto.latitude,
+      longitude: dto.longitude,
+      ip_address: getIp(req),
+      requested_by: userId,
+    });
+
+    if (insertError) throw new Error(insertError.message);
+
+    this.logger.log(`OT request created — employee: ${employeeId}, date: ${otDate}, type: ${dto.ot_type}`);
+
+    return {
+      ot_id: otId,
+      employee_id: employeeId,
+      ot_type: dto.ot_type,
+      ot_date: otDate,
+      start_time: dto.start_time,
+      end_time: dto.end_time,
+      planned_hours: plannedHours,
+      reason: dto.reason ?? null,
+      log_status: 'PENDING',
+    };
+  }
+
+  async getOvertimeRequests(companyId: string, status?: string, type?: string) {
+    const supabase = this.supabaseService.getClient();
+    const employees = await this.getEmployeeUsers(companyId);
+    const employeeIds = employees.map((e) => e.employee_id).filter(Boolean);
+    if (employeeIds.length === 0) return [];
+
+    const employeeById = new Map(employees.map((e) => [e.employee_id, e]));
+    const normalizedStatus = status?.trim().toUpperCase();
+
+    let query = supabase
+      .from('overtime_requests')
+      .select('*')
+      .in('employee_id', employeeIds)
+      .order('ot_date', { ascending: false });
+
+    if (normalizedStatus && normalizedStatus !== 'ALL') {
+      query = query.eq('log_status', normalizedStatus);
+    } else {
+      query = query.eq('log_status', 'PENDING');
+    }
+
+    if (type) {
+      query = query.eq('ot_type', type.toUpperCase());
+    }
+
+    const { data, error } = await query;
+    if (error) throw new Error(error.message);
+
+    const rows = (data ?? []) as OvertimeRow[];
+
+    return rows.map((row) => {
+      const employee = employeeById.get(row.employee_id);
+      return {
+        ...row,
+        user_id:         employee?.user_id         ?? null,
+        first_name:      employee?.first_name       ?? null,
+        last_name:       employee?.last_name        ?? null,
+        department_id:   employee?.department_id    ?? null,
+        department_name: employee?.department_name  ?? null,
+      };
+    });
+  }
+
+  async reviewOvertimeRequest(
+    otId: string,
+    dto: ReviewOvertimeDto,
+    companyId: string,
+    reviewerUserId: string,
+  ) {
+    const supabase = this.supabaseService.getClient();
+
+    const { data: target, error: targetError } = await supabase
+      .from('overtime_requests')
+      .select('*')
+      .eq('ot_id', otId)
+      .maybeSingle<OvertimeRow>();
+
+    if (targetError) throw new Error(targetError.message);
+    if (!target) throw new NotFoundException('Overtime request not found.');
+
+    const { data: owner, error: ownerError } = await supabase
+      .from('user_profile')
+      .select('user_id, company_id, first_name, last_name, email')
+      .eq('employee_id', target.employee_id)
+      .eq('company_id', companyId)
+      .maybeSingle();
+
+    if (ownerError) throw new Error(ownerError.message);
+    if (!owner) throw new NotFoundException('Overtime request not found in your company.');
+
+    const nextStatus =
+      dto.action === OvertimeReviewAction.APPROVE ? 'APPROVED' : 'DENIED';
+
+    const [{ data: updated, error: updateError }, { data: reviewer }] = await Promise.all([
+      supabase
+        .from('overtime_requests')
+        .update({
+          log_status:    nextStatus,
+          reviewed_by:   reviewerUserId,
+          reviewed_at:   new Date().toISOString(),
+          review_reason: dto.review_reason,
+        })
+        .eq('ot_id', otId)
+        .select('*')
+        .maybeSingle<OvertimeRow>(),
+      supabase
+        .from('user_profile')
+        .select('user_id, first_name, last_name')
+        .eq('user_id', reviewerUserId)
+        .maybeSingle(),
+    ]);
+
+    if (updateError) throw new Error(updateError.message);
+    if (!updated) throw new NotFoundException('Overtime request not found.');
+
+    const reviewerName = reviewer
+      ? `${reviewer.first_name} ${reviewer.last_name}`
+      : 'HR';
+
+    if (owner.email) {
+      this.mailService
+        .sendOvertimeReviewEmail({
+          to:           owner.email,
+          employeeName: `${owner.first_name} ${owner.last_name}`,
+          reviewerName,
+          action:       nextStatus as 'APPROVED' | 'DENIED',
+          otDate:       updated.ot_date,
+          otType:       updated.ot_type,
+          startTime:    updated.start_time,
+          endTime:      updated.end_time,
+          plannedHours: Number(updated.planned_hours),
+          reviewNote:   dto.review_reason,
+        })
+        .catch((err) =>
+          this.logger.warn('Overtime review email failed silently', err),
+        );
+    }
+
+    return {
+      ...updated,
+      user_id:          owner.user_id,
+      reviewed_by_name: reviewerName,
+    };
   }
 }

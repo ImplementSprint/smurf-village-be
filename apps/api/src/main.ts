@@ -5,13 +5,13 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import { json, urlencoded } from 'express';
-import { ApiModule } from './api.module';
-import { AllExceptionsFilter } from '@app/common';
-import { corsOptions } from '@app/common';
+import { AppModule } from './app.module';
+import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { corsOptions } from './common/security/security.config';
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
-  const app = await NestFactory.create(ApiModule, { bodyParser: false });
+  const app = await NestFactory.create(AppModule, { bodyParser: false });
   const configService = app.get(ConfigService);
   const enableSwagger = configService.get<string>('ENABLE_SWAGGER') === 'true';
 
@@ -21,7 +21,7 @@ async function bootstrap() {
   app.use(cookieParser());
   app.enableShutdownHooks();
 
-  app.setGlobalPrefix('api/tribeX/auth/v1');
+  app.setGlobalPrefix('api/v1');
   app.enableCors(corsOptions(configService.get<string>('ALLOWED_ORIGINS')));
 
   app.useGlobalPipes(
@@ -42,8 +42,8 @@ async function bootstrap() {
       .build();
 
     const document = SwaggerModule.createDocument(app, config);
-    SwaggerModule.setup('api/tribeX/auth/v1/docs', app, document);
-    logger.log('Swagger docs available at /api/tribeX/auth/v1/docs');
+    SwaggerModule.setup('api/v1/docs', app, document);
+    logger.log('Swagger docs available at /api/v1/docs');
   }
 
   const port = configService.get<number>('PORT') || 5000;
